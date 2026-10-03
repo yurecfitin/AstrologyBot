@@ -30,7 +30,7 @@ from vk_api.utils import get_random_id
 
 
 TG_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [6113518001, 1815133569]
+TG_ADMIN_IDS = [6113518001, 1815133569]
 
 VK_TOKEN = os.getenv("TOKEN_VK")
 VK_GROUP_ID = 241613848
