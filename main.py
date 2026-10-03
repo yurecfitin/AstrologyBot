@@ -23,9 +23,11 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from vk_api.utils import get_random_id
+
 
 TG_TOKEN = os.getenv("BOT_TOKEN")
 TG_ADMIN_IDS = [6113518001, 1815133569]
@@ -110,6 +112,33 @@ def strip_html_for_vk(text: str) -> str:
                 .replace('&#39;', "'"))
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def format_user_card(u: dict, idx: int = None, for_tg: bool = True) -> str:
+    """Формирует карточку пользователя для списка регистраций."""
+    nm = f"{u.get('surname') or ''} {u.get('name') or ''}".strip() or "—"
+    platform = u.get("platform", "?")
+    uid = u.get("user_id", "?")
+    uname = u.get("username")
+    qual = u.get("qualification") or "—"
+    prefix = f"{idx}. " if idx is not None else "• "
+
+    if for_tg:
+        uname_str = f"@{uname}" if uname else "—"
+        return (
+            f"{prefix}[{platform}] <b>{nm}</b>\n"
+            f"   🆔 <code>{uid}</code>\n"
+            f"   🔗 {uname_str}\n"
+            f"   🎓 {qual}"
+        )
+    else:
+        uname_str = f"@{uname}" if uname else "—"
+        return (
+            f"{prefix}[{platform}] {nm}\n"
+            f"   id: {uid}\n"
+            f"   ник: {uname_str}\n"
+            f"   ур.: {qual}"
+        )
 
 
 # ==================== DATABASE ====================
@@ -906,11 +935,26 @@ async def tg_admin_action(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer("Отменено.", reply_markup=tg_admin_kb())
     elif action == "list":
         users = await db.get_all_users()
-        lines = [f"👥 Всего: <b>{len(users)}</b>\n"]
-        for u in users[:50]:
-            nm = f"{u.get('surname') or ''} {u.get('name') or ''}".strip() or "—"
-            lines.append(f"• [{u['platform']}] {nm} | {u.get('qualification') or '—'}")
-        await cb.message.answer("\n".join(lines))
+        if not users:
+            await cb.message.answer("Пока нет зарегистрированных.")
+        else:
+            chunks = [f"👥 <b>Всего: {len(users)}</b>\n"]
+            for idx, u in enumerate(users[:50], start=1):
+                chunks.append(format_user_card(u, idx=idx, for_tg=True))
+            if len(users) > 50:
+                chunks.append(f"\n… и ещё {len(users) - 50}")
+            # Telegram лимит одного сообщения — 4096 символов.
+            # Отправляем частями, если список слишком длинный.
+            buffer = ""
+            for chunk in chunks:
+                piece = (chunk + "\n") if buffer else chunk
+                if len(buffer) + len(piece) > 3800:
+                    await cb.message.answer(buffer)
+                    buffer = piece
+                else:
+                    buffer += piece
+            if buffer.strip():
+                await cb.message.answer(buffer)
     elif action == "requests":
         reqs = await db.get_last_requests(20)
         if not reqs:
@@ -922,7 +966,11 @@ async def tg_admin_action(cb: CallbackQuery, state: FSMContext):
                 t = (r["text"] or "").strip()
                 if len(t) > 150:
                     t = t[:150] + "…"
-                lines.append(f"#{r['id']} [{r['platform']}] {km.get(r['kind'], r['kind'])}\n{t}\n—")
+                lines.append(
+                    f"#{r['id']} [{r['platform']}] {km.get(r['kind'], r['kind'])}\n"
+                    f"🆔 <code>{r['user_id']}</code>\n"
+                    f"{t}\n—"
+                )
             await cb.message.answer("\n".join(lines))
     elif action == "broadcast":
         await state.set_state(AdminStates.broadcast)
@@ -1186,7 +1234,7 @@ def vk_user_link(vk_id):
 
 
 def vk_user_signature(vk_id):
-    return f"👤 VK-пользователь\n🆔 <code>{vk_id}</code>\n💬 {vk_user_link(vk_id)}"
+    return f"👤 VK-пользователь\n🆔 {vk_id}\n💬 {vk_user_link(vk_id)}"
 
 
 # ==================== VK HANDLERS ====================
@@ -1336,11 +1384,25 @@ def vk_handle_payload(user_id, payload):
             vk_send(user_id, "Введите ссылку на трансляцию:", keyboard=vk_admin_cancel_kb())
         elif val == "list":
             users = db_sync(db.get_all_users())
-            lines = [f"👥 Всего: {len(users)}\n"]
-            for u in users[:50]:
-                nm = f"{u.get('surname') or ''} {u.get('name') or ''}".strip() or "—"
-                lines.append(f"• [{u['platform']}] {nm} | {u.get('qualification') or '—'}")
-            vk_send(user_id, "\n".join(lines), keyboard=vk_admin_kb())
+            if not users:
+                vk_send(user_id, "Пока нет зарегистрированных.", keyboard=vk_admin_kb())
+            else:
+                chunks = [f"👥 Всего: {len(users)}\n"]
+                for idx, u in enumerate(users[:50], start=1):
+                    chunks.append(format_user_card(u, idx=idx, for_tg=False))
+                if len(users) > 50:
+                    chunks.append(f"\n… и ещё {len(users) - 50}")
+                # VK лимит одного сообщения — 4096 символов.
+                buffer = ""
+                for chunk in chunks:
+                    piece = (chunk + "\n") if buffer else chunk
+                    if len(buffer) + len(piece) > 3500:
+                        vk_send(user_id, buffer, keyboard=vk_admin_kb())
+                        buffer = piece
+                    else:
+                        buffer += piece
+                if buffer.strip():
+                    vk_send(user_id, buffer, keyboard=vk_admin_kb())
         elif val == "requests":
             reqs = db_sync(db.get_last_requests(20))
             if not reqs:
@@ -1351,7 +1413,7 @@ def vk_handle_payload(user_id, payload):
                     t = (r["text"] or "").strip()
                     if len(t) > 150:
                         t = t[:150] + "…"
-                    lines.append(f"#{r['id']} [{r['platform']}] {r['kind']}\n{t}\n—")
+                    lines.append(f"#{r['id']} [{r['platform']}] {r['kind']}\nid: {r['user_id']}\n{t}\n—")
                 vk_send(user_id, "\n".join(lines), keyboard=vk_admin_kb())
         elif val == "export":
             users = db_sync(db.get_all_users())
