@@ -27,8 +27,6 @@ from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from vk_api.utils import get_random_id
 
-
-
 TG_TOKEN = os.getenv("BOT_TOKEN")
 TG_ADMIN_IDS = [6113518001, 1815133569]
 
@@ -103,17 +101,13 @@ def now_str() -> str:
 
 def strip_html_for_vk(text: str) -> str:
     """Превращает HTML-текст в plain-text для VK."""
-    # <a href="X">Y</a> → Y (X)
     text = re.sub(r'<a\s+href="([^"]+)"[^>]*>([^<]+)</a>', r'\2 (\1)', text)
-    # остальные теги убираем
     text = re.sub(r'<[^>]+>', '', text)
-    # HTML-сущности
     text = (text.replace('&lt;', '<')
                 .replace('&gt;', '>')
                 .replace('&amp;', '&')
                 .replace('&quot;', '"')
                 .replace('&#39;', "'"))
-    # сжимаем пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -412,12 +406,6 @@ class AdminStates(StatesGroup):
 
 # ==================== ЕДИНЫЕ УВЕДОМЛЕНИЯ АДМИНАМ ====================
 async def notify_admins_all_async(text_html: str, tg_reply_markup=None):
-    """
-    Отправляет уведомление ВСЕМ админам — и TG, и VK.
-    TG получают HTML + опциональные inline-кнопки.
-    VK получают plain text (HTML-теги убираются).
-    """
-    # --- TG ---
     if tg_bot_global is not None:
         for admin_id in TG_ADMIN_IDS:
             try:
@@ -427,7 +415,6 @@ async def notify_admins_all_async(text_html: str, tg_reply_markup=None):
             except Exception as e:
                 logging.warning(f"TG notify admin {admin_id}: {e}")
 
-    # --- VK ---
     text_plain = strip_html_for_vk(text_html)
     for admin_id in VK_ADMIN_IDS:
         try:
@@ -442,7 +429,6 @@ async def notify_admins_all_async(text_html: str, tg_reply_markup=None):
 
 
 def notify_admins_all_sync(text_html: str, tg_reply_markup=None):
-    """Обёртка для вызова из VK-потока (sync)."""
     if MAIN_LOOP is None:
         return
     try:
@@ -1030,7 +1016,6 @@ async def tg_admin_broadcast_preview(message: Message, state: FSMContext):
 
 # ==================== ГРАНИЦЫ РАССЫЛОК ====================
 async def get_recipients_async(platform: str) -> list[dict]:
-    """Пользователи платформы + админы этой же платформы (без дублей)."""
     users = await db.get_users_by_platform(platform)
     ids = {int(u["user_id"]) for u in users}
     if platform == "tg":
@@ -1045,7 +1030,6 @@ async def get_recipients_async(platform: str) -> list[dict]:
 
 
 async def broadcast_tg(bot, text_html):
-    """Рассылка в TG: пользователи + TG-админы."""
     users = await get_recipients_async("tg")
     sent = 0
     failed = 0
@@ -1060,7 +1044,6 @@ async def broadcast_tg(bot, text_html):
 
 
 async def broadcast_vk(text_any):
-    """Рассылка в VK: пользователи + VK-админы. HTML-strip выполняется."""
     text_plain = strip_html_for_vk(text_any)
     users = await get_recipients_async("vk")
     sent = 0
@@ -1154,25 +1137,21 @@ def vk_confirm_kb(prefix):
 
 
 def vk_admin_kb():
+    """5 строк по 2 кнопки — укладываемся в лимит VK (max 6 lines)."""
     kb = VkKeyboard(inline=True)
     kb.add_button("✏️ Название", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "title"})
-    kb.add_line()
     kb.add_button("📅 Дата", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "date"})
     kb.add_line()
     kb.add_button("🕐 Время", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "time"})
-    kb.add_line()
-    kb.add_button("📝 Текст «Что за урок?»", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "info"})
+    kb.add_button("📝 Текст", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "info"})
     kb.add_line()
     kb.add_button("🔗 Ссылка", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "link"})
-    kb.add_line()
     kb.add_button("👥 Список", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "list"})
     kb.add_line()
     kb.add_button("📥 Обращения", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "requests"})
-    kb.add_line()
     kb.add_button("📢 Рассылка", color=VkKeyboardColor.POSITIVE, payload={"cmd": "admin", "value": "broadcast"})
     kb.add_line()
     kb.add_button("📨 Ссылка сейчас", color=VkKeyboardColor.POSITIVE, payload={"cmd": "admin", "value": "send_link"})
-    kb.add_line()
     kb.add_button("📤 CSV", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "export"})
     return kb.get_keyboard()
 
@@ -1606,7 +1585,6 @@ async def check_lessons(bot):
         return
     now = datetime.now(ZoneInfo(TIMEZONE))
 
-    # ===== 24ч =====
     if not lesson.get("sent_24h_tg") and lesson_dt - timedelta(hours=24) <= now < lesson_dt:
         await broadcast_tg(bot, f"🔔 Напоминаю: завтра бесплатный онлайн урок «{lesson['title']}» в {lesson['lesson_time']} МСК.")
         await db.mark_sent("sent_24h_tg")
@@ -1614,7 +1592,6 @@ async def check_lessons(bot):
         await broadcast_vk(f"🔔 Напоминаю: завтра бесплатный онлайн урок «{lesson['title']}» в {lesson['lesson_time']} МСК.")
         await db.mark_sent("sent_24h_vk")
 
-    # ===== 1ч =====
     if not lesson.get("sent_1h_tg") and lesson_dt - timedelta(hours=1) <= now < lesson_dt:
         await broadcast_tg(bot, f"⏰ Через час начнётся бесплатный онлайн урок «{lesson['title']}» в {lesson['lesson_time']} МСК.")
         await db.mark_sent("sent_1h_tg")
@@ -1622,7 +1599,6 @@ async def check_lessons(bot):
         await broadcast_vk(f"⏰ Через час начнётся бесплатный онлайн урок «{lesson['title']}» в {lesson['lesson_time']} МСК.")
         await db.mark_sent("sent_1h_vk")
 
-    # ===== 10 мин =====
     if not lesson.get("sent_10min_tg") and lesson_dt - timedelta(minutes=10) <= now < lesson_dt + timedelta(minutes=30):
         link = lesson.get("broadcast_link") or ""
         text = ("🚀 Урок начинается через 10 минут!\n" +
@@ -1649,17 +1625,14 @@ async def main():
 
     await db.init()
 
-    # VK longpoll в отдельном потоке
     get_vk()
     threading.Thread(target=vk_longpoll_thread, daemon=True).start()
 
-    # TG
     bot = Bot(token=TG_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     tg_bot_global = bot
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(tg_router)
 
-    # Планировщик
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(check_lessons, "interval", minutes=1, args=[bot])
     scheduler.start()
