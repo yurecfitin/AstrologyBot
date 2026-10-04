@@ -1183,7 +1183,7 @@ def vk_main_menu_kb():
     kb.add_button("❓ Задать вопрос", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_ask"})
     kb.add_line()
     kb.add_button("📝 Отзывы", color=VkKeyboardColor.SECONDARY,
-                  payload={"cmd": "open_link", "url": "https://t.me/otzyvy_bolotov"})
+                  payload={"cmd": "open_link", "url": "https://vk.ru/topic-221211406_49213877"})
     return kb.get_keyboard()
 
 
