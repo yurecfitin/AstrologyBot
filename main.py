@@ -23,6 +23,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from vk_api.utils import get_random_id
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 
