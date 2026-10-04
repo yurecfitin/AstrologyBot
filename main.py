@@ -533,7 +533,7 @@ def tg_main_menu_kb():
     b.button(text="🔥 Бесплатный урок", callback_data="free_lesson")
     b.button(text="✨ Получить консультацию", callback_data="go_consult")
     b.button(text="❓ Задать вопрос", callback_data="go_ask")
-    b.button(text="📝 Отзывы", url="https://vk.ru/topic-221211406_49213877")
+    b.button(text="📝 Отзывы", url="hhttps://t.me/otzyvy_bolotov")
     b.adjust(1)
     return b.as_markup()
 
@@ -1180,7 +1180,7 @@ def vk_main_menu_kb():
     kb.add_button("❓ Задать вопрос", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_ask"})
     kb.add_line()
     kb.add_button("📝 Отзывы", color=VkKeyboardColor.SECONDARY,
-                  payload={"cmd": "open_link", "url": "https://t.me/otzyvy_bolotov"})
+                  payload={"cmd": "open_link", "url": "https://vk.ru/topic-221211406_49213877"})
     return kb.get_keyboard()
 
 
