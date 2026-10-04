@@ -533,7 +533,7 @@ def tg_main_menu_kb():
     b.button(text="🔥 Бесплатный урок", callback_data="free_lesson")
     b.button(text="✨ Получить консультацию", callback_data="go_consult")
     b.button(text="❓ Задать вопрос", callback_data="go_ask")
-    b.button(text="📝 Отзывы", url="https://t.me/otzyvy_bolotov")
+    b.button(text="📝 Отзывы", url="https://vk.ru/topic-221211406_49213877")
     b.adjust(1)
     return b.as_markup()
 
