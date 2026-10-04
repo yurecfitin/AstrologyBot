@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -23,9 +24,15 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from vk_api.utils import get_random_id
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+
+
+
+
+def get_random_id() -> int:
+    """Уникальный ID для messages.send (VK требует уникальный random_id)."""
+    return random.getrandbits(63)
 
 
 TG_TOKEN = os.getenv("BOT_TOKEN")
@@ -469,11 +476,7 @@ class AdminStates(StatesGroup):
 # ==================== ЕДИНЫЕ УВЕДОМЛЕНИЯ АДМИНАМ ====================
 async def notify_admins_event_async(text_html, source="tg", vk_user_id=None,
                                     vk_username=None, tg_reply_markup=None):
-    """
-    Отправляет уведомление всем админам — и TG, и VK.
-    source='tg'  → TG-событие, TG-админам уходит tg_reply_markup как есть.
-    source='vk'  → VK-событие, TG-админам добавляется кнопка «Открыть профиль VK».
-    """
+    """Отправляет уведомление всем админам — и TG, и VK."""
     # --- TG ---
     if tg_bot_global is not None:
         markup = tg_reply_markup
@@ -533,7 +536,7 @@ def tg_main_menu_kb():
     b.button(text="🔥 Бесплатный урок", callback_data="free_lesson")
     b.button(text="✨ Получить консультацию", callback_data="go_consult")
     b.button(text="❓ Задать вопрос", callback_data="go_ask")
-    b.button(text="📝 Отзывы", url="hhttps://t.me/otzyvy_bolotov")
+    b.button(text="📝 Отзывы", url="https://t.me/otzyvy_bolotov")
     b.adjust(1)
     return b.as_markup()
 
@@ -1180,7 +1183,7 @@ def vk_main_menu_kb():
     kb.add_button("❓ Задать вопрос", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_ask"})
     kb.add_line()
     kb.add_button("📝 Отзывы", color=VkKeyboardColor.SECONDARY,
-                  payload={"cmd": "open_link", "url": "https://vk.ru/topic-221211406_49213877"})
+                  payload={"cmd": "open_link", "url": "https://t.me/otzyvy_bolotov"})
     return kb.get_keyboard()
 
 
@@ -1304,7 +1307,15 @@ def vk_show_welcome(user_id):
 
 
 def vk_handle_payload(user_id, payload):
-    cmd = payload.get("cmd")
+    # VK присылает ключ "command" для системных кнопок,
+    # но мы также используем "cmd" в своих payload.
+    cmd = payload.get("cmd") or payload.get("command")
+
+    # --- Старт (кнопка «Начать» / «Start») ---
+    if cmd in ("start", "begin"):
+        db_sync(db.log_event("vk", user_id, "start"))
+        vk_show_welcome(user_id)
+        return
 
     if cmd == "go_astrologer":
         db_sync(db.clear_state("vk", user_id))
@@ -1319,7 +1330,6 @@ def vk_handle_payload(user_id, payload):
         choice = cmap.get(payload.get("value"), "—")
         db_sync(db.clear_state("vk", user_id))
 
-        # Получаем username и имя из VK
         vk_username = vk_get_username(user_id)
         vk_profile = vk_get_profile_name(user_id)
 
@@ -1523,9 +1533,25 @@ def vk_handle_payload(user_id, payload):
             vk_send(user_id, "Отменено.", keyboard=vk_admin_kb())
         return
 
+    # --- Fallback: неизвестное нажатие — открываем главное меню ---
+    vk_show_welcome(user_id)
+
 
 def vk_handle_text(user_id, text):
     text_stripped = text.strip()
+
+    # --- Приветственные слова VK ---
+    if text_stripped.lower() in ("начать", "start", "/start", "старт"):
+        db_sync(db.log_event("vk", user_id, "start"))
+        vk_show_welcome(user_id)
+        return
+
+    # --- Пустое сообщение (стикер, фото без текста) ---
+    if not text_stripped:
+        state, _ = db_sync(db.get_state("vk", user_id))
+        if state is None:
+            vk_show_welcome(user_id)
+        return
 
     if text_stripped == HOME_BUTTON_TEXT:
         vk_show_welcome(user_id)
@@ -1652,6 +1678,7 @@ def vk_handle_text(user_id, text):
             keyboard=vk_admin_broadcast_confirm_kb())
         return
 
+    # --- Fallback: не поняли, что хочет пользователь — открываем меню ---
     vk_show_welcome(user_id)
 
 
@@ -1660,7 +1687,6 @@ def vk_finish_registration(user_id, data):
     name = data.get("name") or "—"
     qual = data.get("qualification") or "—"
 
-    # Данные из VK-профиля
     vk_username = vk_get_username(user_id)
     vk_profile = vk_get_profile_name(user_id)
 
@@ -1703,9 +1729,14 @@ def vk_longpoll_thread():
                     user_id = obj.get("from_id")
                     text = obj.get("text", "")
                     payload_raw = obj.get("payload")
+
+                    # Пропускаем сообщения от самого бота
+                    if user_id is None or user_id < 0:
+                        continue
+
                     if payload_raw:
                         try:
-                            payload = json.loads(payload_raw)
+                            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
                         except Exception:
                             payload = {}
                         vk_handle_payload(user_id, payload)
