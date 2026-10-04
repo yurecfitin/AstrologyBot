@@ -23,10 +23,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-from vk_api.utils import get_random_id
 
 
 TG_TOKEN = os.getenv("BOT_TOKEN")
@@ -139,6 +137,40 @@ def format_user_card(u: dict, idx: int = None, for_tg: bool = True) -> str:
             f"   ник: {uname_str}\n"
             f"   ур.: {qual}"
         )
+
+
+# ==================== VK USER INFO (кеш) ====================
+_vk_user_cache: dict[int, dict] = {}
+
+
+def vk_get_user_info(user_id: int) -> dict:
+    """Возвращает {id, first_name, last_name, screen_name}. Кеширует результат."""
+    if user_id in _vk_user_cache:
+        return _vk_user_cache[user_id]
+    try:
+        result = get_vk().users.get(user_ids=user_id, fields="screen_name")
+        if result and isinstance(result, list):
+            info = result[0]
+            _vk_user_cache[user_id] = info
+            return info
+    except Exception as e:
+        logging.warning(f"VK users.get {user_id}: {e}")
+    _vk_user_cache[user_id] = {}
+    return {}
+
+
+def vk_get_username(user_id: int) -> str | None:
+    """Возвращает screen_name пользователя VK или None."""
+    info = vk_get_user_info(user_id)
+    return info.get("screen_name") or info.get("domain") or None
+
+
+def vk_get_profile_name(user_id: int) -> str:
+    """Возвращает «Имя Фамилия» из VK-профиля или пустую строку."""
+    info = vk_get_user_info(user_id)
+    first = info.get("first_name") or ""
+    last = info.get("last_name") or ""
+    return f"{first} {last}".strip()
 
 
 # ==================== DATABASE ====================
@@ -434,16 +466,29 @@ class AdminStates(StatesGroup):
 
 
 # ==================== ЕДИНЫЕ УВЕДОМЛЕНИЯ АДМИНАМ ====================
-async def notify_admins_all_async(text_html: str, tg_reply_markup=None):
+async def notify_admins_event_async(text_html, source="tg", vk_user_id=None,
+                                    vk_username=None, tg_reply_markup=None):
+    """
+    Отправляет уведомление всем админам — и TG, и VK.
+    source='tg'  → TG-событие, TG-админам уходит tg_reply_markup как есть.
+    source='vk'  → VK-событие, TG-админам добавляется кнопка «Открыть профиль VK».
+    """
+    # --- TG ---
     if tg_bot_global is not None:
+        markup = tg_reply_markup
+        if source == "vk" and vk_user_id is not None:
+            url = f"https://vk.com/{vk_username}" if vk_username else f"https://vk.com/id{vk_user_id}"
+            rows = [[InlineKeyboardButton(text="💬 Открыть профиль VK", url=url)]]
+            rows.append([InlineKeyboardButton(text="📥 Все обращения", callback_data="admin:requests")])
+            markup = InlineKeyboardMarkup(inline_keyboard=rows)
+
         for admin_id in TG_ADMIN_IDS:
             try:
-                await tg_bot_global.send_message(
-                    admin_id, text_html, reply_markup=tg_reply_markup
-                )
+                await tg_bot_global.send_message(admin_id, text_html, reply_markup=markup)
             except Exception as e:
                 logging.warning(f"TG notify admin {admin_id}: {e}")
 
+    # --- VK ---
     text_plain = strip_html_for_vk(text_html)
     for admin_id in VK_ADMIN_IDS:
         try:
@@ -457,12 +502,16 @@ async def notify_admins_all_async(text_html: str, tg_reply_markup=None):
             logging.warning(f"VK notify admin {admin_id}: {e}")
 
 
-def notify_admins_all_sync(text_html: str, tg_reply_markup=None):
+def notify_admins_event_sync(text_html, source="tg", vk_user_id=None,
+                             vk_username=None, tg_reply_markup=None):
     if MAIN_LOOP is None:
         return
     try:
         fut = asyncio.run_coroutine_threadsafe(
-            notify_admins_all_async(text_html, tg_reply_markup), MAIN_LOOP
+            notify_admins_event_async(
+                text_html, source, vk_user_id, vk_username, tg_reply_markup
+            ),
+            MAIN_LOOP,
         )
         fut.result(timeout=15)
     except Exception as e:
@@ -690,10 +739,11 @@ async def tg_astrologer_choice(cb: CallbackQuery, state: FSMContext):
     req_id = await db.save_request("tg", cb.from_user.id, cb.from_user.username, "astrologer", choice)
 
     if cb.from_user.id not in TG_ADMIN_IDS:
-        await notify_admins_all_async(
+        await notify_admins_event_async(
             f"🚀 <b>Заявка «Стать астрологом» #{req_id}</b> [TG]\n"
             f"Время: {now_str()}\n\n🎯 <b>Цель:</b> {choice}\n\n"
             f"{tg_user_signature(cb.from_user)}",
+            source="tg",
             tg_reply_markup=tg_admin_request_notification_kb(cb.from_user.id),
         )
 
@@ -763,9 +813,10 @@ async def tg_receive_request(message: Message, state: FSMContext):
     label = "✨ Заявка на консультацию" if kind == "consult" else "❓ Вопрос от пользователя"
 
     if message.from_user.id not in TG_ADMIN_IDS:
-        await notify_admins_all_async(
+        await notify_admins_event_async(
             f"{label} <b>#{req_id}</b> [TG]\nВремя: {now_str()}\n\n"
             f"💬 <b>Текст:</b>\n{text}\n\n{tg_user_signature(message.from_user)}",
+            source="tg",
             tg_reply_markup=tg_admin_request_notification_kb(message.from_user.id),
         )
 
@@ -888,11 +939,12 @@ async def tg_reg_name(message: Message, state: FSMContext):
     await tg_cleanup_reg(message.bot, message.chat.id)
 
     if message.from_user.id not in TG_ADMIN_IDS:
-        await notify_admins_all_async(
+        await notify_admins_event_async(
             f"🎉 <b>Новая регистрация [TG]</b>\n\n"
             f"<b>Фамилия:</b> {surname}\n<b>Имя:</b> {text}\n"
             f"<b>Квалификация:</b> {qual}\nВремя: {now_str()}\n\n"
             f"{tg_user_signature(message.from_user)}",
+            source="tg",
             tg_reply_markup=tg_admin_request_notification_kb(message.from_user.id),
         )
 
@@ -943,8 +995,6 @@ async def tg_admin_action(cb: CallbackQuery, state: FSMContext):
                 chunks.append(format_user_card(u, idx=idx, for_tg=True))
             if len(users) > 50:
                 chunks.append(f"\n… и ещё {len(users) - 50}")
-            # Telegram лимит одного сообщения — 4096 символов.
-            # Отправляем частями, если список слишком длинный.
             buffer = ""
             for chunk in chunks:
                 piece = (chunk + "\n") if buffer else chunk
@@ -1129,7 +1179,7 @@ def vk_main_menu_kb():
     kb.add_button("❓ Задать вопрос", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_ask"})
     kb.add_line()
     kb.add_button("📝 Отзывы", color=VkKeyboardColor.SECONDARY,
-                  payload={"cmd": "open_link", "url": "https://vk.ru/topic-221211406_49213877"})
+                  payload={"cmd": "open_link", "url": "https://t.me/otzyvy_bolotov"})
     return kb.get_keyboard()
 
 
@@ -1229,12 +1279,20 @@ def vk_send(user_id, text, keyboard=None):
         logging.warning(f"VK send {user_id}: {e}")
 
 
-def vk_user_link(vk_id):
-    return f"https://vk.com/id{vk_id}"
+def vk_user_link(vk_id, username=None):
+    return f"https://vk.com/{username}" if username else f"https://vk.com/id{vk_id}"
 
 
-def vk_user_signature(vk_id):
-    return f"👤 VK-пользователь\n🆔 {vk_id}\n💬 {vk_user_link(vk_id)}"
+def vk_user_signature(vk_id, username=None, profile_name=None):
+    lines = ["👤 <b>VK-пользователь</b>"]
+    if profile_name:
+        lines.append(f"📛 {profile_name}")
+    lines.append(f"🆔 <code>{vk_id}</code>")
+    if username:
+        lines.append(f'🔗 <a href="https://vk.com/{username}">vk.com/{username}</a>')
+    else:
+        lines.append(f'🔗 <a href="https://vk.com/id{vk_id}">vk.com/id{vk_id}</a>')
+    return "\n".join(lines)
 
 
 # ==================== VK HANDLERS ====================
@@ -1259,13 +1317,21 @@ def vk_handle_payload(user_id, payload):
                 "income": "Источник дохода", "tool": "Дополнительный инструмент"}
         choice = cmap.get(payload.get("value"), "—")
         db_sync(db.clear_state("vk", user_id))
-        req_id = db_sync(db.save_request("vk", user_id, None, "astrologer", choice))
+
+        # Получаем username и имя из VK
+        vk_username = vk_get_username(user_id)
+        vk_profile = vk_get_profile_name(user_id)
+
+        req_id = db_sync(db.save_request("vk", user_id, vk_username, "astrologer", choice))
 
         if not is_vk_admin(user_id):
-            notify_admins_all_sync(
+            notify_admins_event_sync(
                 f"🚀 <b>Заявка «Стать астрологом» #{req_id}</b> [VK]\n"
                 f"Время: {now_str()}\n\n🎯 <b>Цель:</b> {choice}\n\n"
-                f"{vk_user_signature(user_id)}"
+                f"{vk_user_signature(user_id, vk_username, vk_profile)}",
+                source="vk",
+                vk_user_id=user_id,
+                vk_username=vk_username,
             )
 
         vk_send(user_id,
@@ -1392,7 +1458,6 @@ def vk_handle_payload(user_id, payload):
                     chunks.append(format_user_card(u, idx=idx, for_tg=False))
                 if len(users) > 50:
                     chunks.append(f"\n… и ещё {len(users) - 50}")
-                # VK лимит одного сообщения — 4096 символов.
                 buffer = ""
                 for chunk in chunks:
                     piece = (chunk + "\n") if buffer else chunk
@@ -1513,13 +1578,20 @@ def vk_handle_text(user_id, text):
                 db_sync(db.clear_state("vk", user_id))
                 vk_show_welcome(user_id)
                 return
-        req_id = db_sync(db.save_request("vk", user_id, None, kind, text_stripped))
+
+        vk_username = vk_get_username(user_id)
+        vk_profile = vk_get_profile_name(user_id)
+
+        req_id = db_sync(db.save_request("vk", user_id, vk_username, kind, text_stripped))
         label = "✨ Заявка на консультацию" if kind == "consult" else "❓ Вопрос от пользователя"
         if not is_vk_admin(user_id):
-            notify_admins_all_sync(
+            notify_admins_event_sync(
                 f"{label} <b>#{req_id}</b> [VK]\n"
                 f"Время: {now_str()}\n\n💬 <b>Текст:</b>\n{text_stripped}\n\n"
-                f"{vk_user_signature(user_id)}"
+                f"{vk_user_signature(user_id, vk_username, vk_profile)}",
+                source="vk",
+                vk_user_id=user_id,
+                vk_username=vk_username,
             )
         db_sync(db.clear_state("vk", user_id))
         vk_send(user_id,
@@ -1586,15 +1658,26 @@ def vk_finish_registration(user_id, data):
     surname = data.get("surname") or "—"
     name = data.get("name") or "—"
     qual = data.get("qualification") or "—"
-    db_sync(db.save_user("vk", user_id, None, surname, name, qual))
+
+    # Данные из VK-профиля
+    vk_username = vk_get_username(user_id)
+    vk_profile = vk_get_profile_name(user_id)
+
+    db_sync(db.save_user("vk", user_id, vk_username, surname, name, qual))
     db_sync(db.clear_state("vk", user_id))
 
     if not is_vk_admin(user_id):
-        notify_admins_all_sync(
+        notify_admins_event_sync(
             f"🎉 <b>Новая регистрация [VK]</b>\n\n"
-            f"<b>Фамилия:</b> {surname}\n<b>Имя:</b> {name}\n"
-            f"<b>Квалификация:</b> {qual}\nВремя: {now_str()}\n\n"
-            f"{vk_user_signature(user_id)}"
+            f"<b>Фамилия:</b> {surname}\n"
+            f"<b>Имя:</b> {name}\n"
+            f"<b>Квалификация:</b> {qual}\n"
+            f"<b>Профиль VK:</b> {vk_profile or '—'}\n"
+            f"Время: {now_str()}\n\n"
+            f"{vk_user_signature(user_id, vk_username, vk_profile)}",
+            source="vk",
+            vk_user_id=user_id,
+            vk_username=vk_username,
         )
 
     lesson = db_sync(db.get_lesson())
