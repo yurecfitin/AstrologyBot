@@ -27,6 +27,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 
+# ==================== CONFIG ====================
 
 
 
@@ -51,6 +52,12 @@ ADMIN_BUTTON_TEXT = "🛠 Админ-панель"
 MAX_REQUEST_LEN = 2000
 MIN_REQUEST_LEN = 2
 REQUEST_COOLDOWN_SECONDS = 300
+
+# Ссылки
+REVIEWS_URL_TG = "https://t.me/otzyvy_bolotov"
+REVIEWS_URL_VK = "https://vk.ru/topic-221211406_49213877"
+ASTROLOGER_VK_URL = "https://vk.com/bolotovvyacheslav"
+ASTROLOGER_TG_URL = "https://t.me/bolotovvyacheslav"
 
 DEFAULT_INFO = (
     "✨ Тема, о которой вспоминают редко.\n"
@@ -152,7 +159,6 @@ _vk_user_cache: dict[int, dict] = {}
 
 
 def vk_get_user_info(user_id: int) -> dict:
-    """Возвращает {id, first_name, last_name, screen_name}. Кеширует результат."""
     if user_id in _vk_user_cache:
         return _vk_user_cache[user_id]
     try:
@@ -168,13 +174,11 @@ def vk_get_user_info(user_id: int) -> dict:
 
 
 def vk_get_username(user_id: int) -> str | None:
-    """Возвращает screen_name пользователя VK или None."""
     info = vk_get_user_info(user_id)
     return info.get("screen_name") or info.get("domain") or None
 
 
 def vk_get_profile_name(user_id: int) -> str:
-    """Возвращает «Имя Фамилия» из VK-профиля или пустую строку."""
     info = vk_get_user_info(user_id)
     first = info.get("first_name") or ""
     last = info.get("last_name") or ""
@@ -476,8 +480,6 @@ class AdminStates(StatesGroup):
 # ==================== ЕДИНЫЕ УВЕДОМЛЕНИЯ АДМИНАМ ====================
 async def notify_admins_event_async(text_html, source="tg", vk_user_id=None,
                                     vk_username=None, tg_reply_markup=None):
-    """Отправляет уведомление всем админам — и TG, и VK."""
-    # --- TG ---
     if tg_bot_global is not None:
         markup = tg_reply_markup
         if source == "vk" and vk_user_id is not None:
@@ -492,7 +494,6 @@ async def notify_admins_event_async(text_html, source="tg", vk_user_id=None,
             except Exception as e:
                 logging.warning(f"TG notify admin {admin_id}: {e}")
 
-    # --- VK ---
     text_plain = strip_html_for_vk(text_html)
     for admin_id in VK_ADMIN_IDS:
         try:
@@ -536,7 +537,7 @@ def tg_main_menu_kb():
     b.button(text="🔥 Бесплатный урок", callback_data="free_lesson")
     b.button(text="✨ Получить консультацию", callback_data="go_consult")
     b.button(text="❓ Задать вопрос", callback_data="go_ask")
-    b.button(text="📝 Отзывы", url="https://t.me/otzyvy_bolotov")
+    b.button(text="📝 Отзывы", url=REVIEWS_URL_TG)
     b.adjust(1)
     return b.as_markup()
 
@@ -1163,6 +1164,44 @@ async def broadcast_vk(text_any):
 
 
 # ==================== VK KEYBOARDS ====================
+# --- Хелперы для ручной сборки JSON-клавиатур с open_link ---
+
+def _vk_text_button(label: str, payload: dict) -> dict:
+    """Текстовая кнопка с payload."""
+    return {
+        "action": {
+            "type": "text",
+            "label": label,
+            "payload": json.dumps(payload, ensure_ascii=False),
+        }
+    }
+
+
+def _vk_open_link_button(label: str, url: str) -> dict:
+    """Кнопка-ссылка: открывается сразу при нажатии, бот не получает событие."""
+    return {
+        "action": {
+            "type": "open_link",
+            "link": url,
+            "label": label,
+        }
+    }
+
+
+def _vk_build_keyboard(rows: list[list[dict]], inline: bool = True, one_time: bool = False) -> str:
+    """Собирает JSON-клавиатуру из готовых кнопок."""
+    return json.dumps(
+        {
+            "one_time": one_time,
+            "inline": inline,
+            "buttons": rows,
+        },
+        ensure_ascii=False,
+    )
+
+
+# --- Обычные клавиатуры (можно оставить как было, через VkKeyboard) ---
+
 def vk_home_kb(user_id):
     kb = VkKeyboard(one_time=False)
     kb.add_button(HOME_BUTTON_TEXT, color=VkKeyboardColor.PRIMARY)
@@ -1172,108 +1211,112 @@ def vk_home_kb(user_id):
     return kb.get_keyboard()
 
 
+# --- Меню (с нативной кнопкой-ссылкой на отзывы) ---
+
 def vk_main_menu_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("🚀 Стать астрологом", color=VkKeyboardColor.PRIMARY, payload={"cmd": "go_astrologer"})
-    kb.add_line()
-    kb.add_button("🔥 Бесплатный урок", color=VkKeyboardColor.PRIMARY, payload={"cmd": "free_lesson"})
-    kb.add_line()
-    kb.add_button("✨ Получить консультацию", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_consult"})
-    kb.add_line()
-    kb.add_button("❓ Задать вопрос", color=VkKeyboardColor.POSITIVE, payload={"cmd": "go_ask"})
-    kb.add_line()
-    kb.add_button("📝 Отзывы", color=VkKeyboardColor.SECONDARY,
-                  payload={"cmd": "open_link", "url": "https://vk.ru/topic-221211406_49213877"})
-    return kb.get_keyboard()
+    """Главное меню. «📝 Отзывы» — нативная кнопка-ссылка."""
+    rows = [
+        [_vk_text_button("🚀 Стать астрологом", {"cmd": "go_astrologer"})],
+        [_vk_text_button("🔥 Бесплатный урок", {"cmd": "free_lesson"})],
+        [_vk_text_button("✨ Получить консультацию", {"cmd": "go_consult"})],
+        [_vk_text_button("❓ Задать вопрос", {"cmd": "go_ask"})],
+        [_vk_open_link_button("📝 Отзывы", REVIEWS_URL_VK)],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_astrologer_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("🪞 Понимание себя", color=VkKeyboardColor.PRIMARY, payload={"cmd": "astro", "value": "understand"})
-    kb.add_line()
-    kb.add_button("💼 Новая профессия", color=VkKeyboardColor.PRIMARY, payload={"cmd": "astro", "value": "career"})
-    kb.add_line()
-    kb.add_button("💰 Источник дохода", color=VkKeyboardColor.PRIMARY, payload={"cmd": "astro", "value": "income"})
-    kb.add_line()
-    kb.add_button("🧰 Дополнительный инструмент", color=VkKeyboardColor.PRIMARY, payload={"cmd": "astro", "value": "tool"})
-    return kb.get_keyboard()
+    rows = [
+        [_vk_text_button("🪞 Понимание себя", {"cmd": "astro", "value": "understand"})],
+        [_vk_text_button("💼 Новая профессия", {"cmd": "astro", "value": "career"})],
+        [_vk_text_button("💰 Источник дохода", {"cmd": "astro", "value": "income"})],
+        [_vk_text_button("🧰 Дополнительный инструмент", {"cmd": "astro", "value": "tool"})],
+        [_vk_open_link_button("💬 Написать Вячеславу", ASTROLOGER_VK_URL)],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_free_lesson_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("✅ Регистрируюсь!", color=VkKeyboardColor.POSITIVE, payload={"cmd": "reg_start"})
-    kb.add_line()
-    kb.add_button("❓ Что за урок?", color=VkKeyboardColor.SECONDARY, payload={"cmd": "lesson_info"})
-    return kb.get_keyboard()
+    rows = [
+        [_vk_text_button("✅ Регистрируюсь!", {"cmd": "reg_start"})],
+        [_vk_text_button("❓ Что за урок?", {"cmd": "lesson_info"})],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_lesson_info_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("✅ Регистрируюсь!", color=VkKeyboardColor.POSITIVE, payload={"cmd": "reg_start"})
-    kb.add_line()
-    kb.add_button("⏪ Назад", color=VkKeyboardColor.SECONDARY, payload={"cmd": "free_lesson"})
-    return kb.get_keyboard()
+    rows = [
+        [_vk_text_button("✅ Регистрируюсь!", {"cmd": "reg_start"})],
+        [_vk_text_button("⏪ Назад", {"cmd": "free_lesson"})],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_qualification_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("😎 Разбираюсь, профи", color=VkKeyboardColor.PRIMARY, payload={"cmd": "qual", "value": "pro"})
-    kb.add_line()
-    kb.add_button("🤔 Интересуюсь", color=VkKeyboardColor.PRIMARY, payload={"cmd": "qual", "value": "interest"})
-    kb.add_line()
-    kb.add_button("🤩 Хочу изучать", color=VkKeyboardColor.PRIMARY, payload={"cmd": "qual", "value": "learn"})
-    return kb.get_keyboard()
+    rows = [
+        [_vk_text_button("😎 Разбираюсь, профи", {"cmd": "qual", "value": "pro"})],
+        [_vk_text_button("🤔 Интересуюсь", {"cmd": "qual", "value": "interest"})],
+        [_vk_text_button("🤩 Хочу изучать", {"cmd": "qual", "value": "learn"})],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_back_only_kb(cmd, label="⏪ Назад"):
-    kb = VkKeyboard(inline=True)
-    kb.add_button(label, color=VkKeyboardColor.SECONDARY, payload={"cmd": cmd})
-    return kb.get_keyboard()
+    rows = [[_vk_text_button(label, {"cmd": cmd})]]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_confirm_kb(prefix):
-    kb = VkKeyboard(inline=True)
-    kb.add_button("✏️ Исправить", color=VkKeyboardColor.SECONDARY, payload={"cmd": f"{prefix}_fix"})
-    kb.add_button("✅ Далее", color=VkKeyboardColor.POSITIVE, payload={"cmd": f"{prefix}_confirm"})
-    return kb.get_keyboard()
+    rows = [[
+        _vk_text_button("✏️ Исправить", {"cmd": f"{prefix}_fix"}),
+        _vk_text_button("✅ Далее", {"cmd": f"{prefix}_confirm"}),
+    ]]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_admin_kb():
-    """5 строк по 2 кнопки — укладываемся в лимит VK (max 6 lines)."""
-    kb = VkKeyboard(inline=True)
-    kb.add_button("✏️ Название", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "title"})
-    kb.add_button("📅 Дата", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "date"})
-    kb.add_line()
-    kb.add_button("🕐 Время", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "time"})
-    kb.add_button("📝 Текст", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "info"})
-    kb.add_line()
-    kb.add_button("🔗 Ссылка", color=VkKeyboardColor.PRIMARY, payload={"cmd": "admin", "value": "link"})
-    kb.add_button("👥 Список", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "list"})
-    kb.add_line()
-    kb.add_button("📥 Обращения", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "requests"})
-    kb.add_button("📢 Рассылка", color=VkKeyboardColor.POSITIVE, payload={"cmd": "admin", "value": "broadcast"})
-    kb.add_line()
-    kb.add_button("📨 Ссылка сейчас", color=VkKeyboardColor.POSITIVE, payload={"cmd": "admin", "value": "send_link"})
-    kb.add_button("📤 CSV", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "export"})
-    return kb.get_keyboard()
+    """5 строк по 2 кнопки — укладывается в лимит VK (max 6 lines)."""
+    rows = [
+        [
+            _vk_text_button("✏️ Название", {"cmd": "admin", "value": "title"}),
+            _vk_text_button("📅 Дата", {"cmd": "admin", "value": "date"}),
+        ],
+        [
+            _vk_text_button("🕐 Время", {"cmd": "admin", "value": "time"}),
+            _vk_text_button("📝 Текст", {"cmd": "admin", "value": "info"}),
+        ],
+        [
+            _vk_text_button("🔗 Ссылка", {"cmd": "admin", "value": "link"}),
+            _vk_text_button("👥 Список", {"cmd": "admin", "value": "list"}),
+        ],
+        [
+            _vk_text_button("📥 Обращения", {"cmd": "admin", "value": "requests"}),
+            _vk_text_button("📢 Рассылка", {"cmd": "admin", "value": "broadcast"}),
+        ],
+        [
+            _vk_text_button("📨 Ссылка сейчас", {"cmd": "admin", "value": "send_link"}),
+            _vk_text_button("📤 CSV", {"cmd": "admin", "value": "export"}),
+        ],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_admin_cancel_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("⏪ Отмена", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "cancel"})
-    return kb.get_keyboard()
+    rows = [[_vk_text_button("⏪ Отмена", {"cmd": "admin", "value": "cancel"})]]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 def vk_admin_broadcast_confirm_kb():
-    kb = VkKeyboard(inline=True)
-    kb.add_button("✅ Отправить всем", color=VkKeyboardColor.POSITIVE, payload={"cmd": "admin", "value": "broadcast_confirm"})
-    kb.add_line()
-    kb.add_button("⏪ Отмена", color=VkKeyboardColor.SECONDARY, payload={"cmd": "admin", "value": "cancel"})
-    return kb.get_keyboard()
+    rows = [
+        [_vk_text_button("✅ Отправить всем", {"cmd": "admin", "value": "broadcast_confirm"})],
+        [_vk_text_button("⏪ Отмена", {"cmd": "admin", "value": "cancel"})],
+    ]
+    return _vk_build_keyboard(rows, inline=True)
 
 
 # ==================== VK SENDING ====================
 def vk_send(user_id, text, keyboard=None):
+    """keyboard может быть строкой JSON (после _vk_build_keyboard) или готовым dict/list."""
     params = {"user_id": user_id, "message": text, "random_id": get_random_id()}
     if keyboard:
         params["keyboard"] = keyboard
@@ -1307,8 +1350,6 @@ def vk_show_welcome(user_id):
 
 
 def vk_handle_payload(user_id, payload):
-    # VK присылает ключ "command" для системных кнопок,
-    # но мы также используем "cmd" в своих payload.
     cmd = payload.get("cmd") or payload.get("command")
 
     # --- Старт (кнопка «Начать» / «Start») ---
@@ -1438,6 +1479,7 @@ def vk_handle_payload(user_id, payload):
             keyboard=vk_home_kb(user_id))
         return
 
+    # Fallback: старое поведение open_link (для совместимости со старыми клавиатурами)
     if cmd == "open_link":
         vk_send(user_id, f"🔗 {payload.get('url', '')}", keyboard=vk_home_kb(user_id))
         return
@@ -1533,7 +1575,7 @@ def vk_handle_payload(user_id, payload):
             vk_send(user_id, "Отменено.", keyboard=vk_admin_kb())
         return
 
-    # --- Fallback: неизвестное нажатие — открываем главное меню ---
+    # Fallback: неизвестное нажатие — открываем главное меню
     vk_show_welcome(user_id)
 
 
@@ -1546,7 +1588,7 @@ def vk_handle_text(user_id, text):
         vk_show_welcome(user_id)
         return
 
-    # --- Пустое сообщение (стикер, фото без текста) ---
+    # --- Пустое сообщение ---
     if not text_stripped:
         state, _ = db_sync(db.get_state("vk", user_id))
         if state is None:
@@ -1678,7 +1720,6 @@ def vk_handle_text(user_id, text):
             keyboard=vk_admin_broadcast_confirm_kb())
         return
 
-    # --- Fallback: не поняли, что хочет пользователь — открываем меню ---
     vk_show_welcome(user_id)
 
 
@@ -1730,7 +1771,6 @@ def vk_longpoll_thread():
                     text = obj.get("text", "")
                     payload_raw = obj.get("payload")
 
-                    # Пропускаем сообщения от самого бота
                     if user_id is None or user_id < 0:
                         continue
 
